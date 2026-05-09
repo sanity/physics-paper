@@ -1,0 +1,369 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{authblk}
+\usepackage{caption}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!50!black,
+}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\enc}{\mathrm{enc}}
+\newcommand{\combine}{\oplus}
+\newcommand{\evolve}{\mathcal{E}}
+\renewcommand{\frame}{\phi}
+\newcommand{\SW}{\mathrm{SW}}
+\DeclareMathOperator*{\argmin}{arg\,min}
+
+\title{A Learned Latent Algebra for Physical Systems\\ Closed Under Spatial Composition and Time Evolution\thanks{Draft --- work in progress as of 2026-05-08.}}
+
+\author{Ian Clarke\thanks{\texttt{ian.clarke@gmail.com}}}
+\affil{Independent}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We ask whether the latent representation of a many-particle physical system can support a \emph{compositional algebra} that is closed under both spatial composition and time evolution: encoding subsystems, combining them with a learned operator, and evolving the result should agree with first evolving the parts and then combining. Using a translation-invariant graph encoder, a symmetric learned combine operator $\combine$, a learned one-step evolve operator $\evolve$, and density and velocity decoders trained against soft particle ground truth, we report three findings on two-dimensional rigid-body scenes. (i) A sliced-Wasserstein density loss is the lever that makes the rest possible, replacing a long-standing pixel-MSE blur ceiling at RMSE $0.190$ with $0.114$ at $64$ particles and producing an embedding on which eight unrelated physical observables are linearly readable at $R^2 \ge 0.89$. (ii) Two paired-union losses on $128$-particle scenes --- a Wasserstein density term on $\enc(A \cup B)$ and a combine--anchor term tying $\combine(\enc A, \enc B)$ to $\enc(A \cup B)$ --- reduce $128$-particle out-of-distribution density RMSE from $0.188$ to $0.116$ direct, and from $0.207$ to $0.142$ via combine, without degrading the in-distribution numbers. (iii) Adding a single commutativity loss $\|\evolve(\combine(a, b)) - \combine(\evolve(a), \evolve(b))\|^2$ drives test-time compose--evolve commutativity from cosine $0.86$--$0.99$ down to $\ge 0.989$ at horizons up to eight evolution steps, while density quality continues to improve ($64$p RMSE $0.093$, $128$p OOD $0.110$). The algebra is approximately closed under both axes simultaneously. The same architecture transfers without modification across thermodynamic regimes: training on a Lennard-Jones fluid ($T^* = 1.0$) and gas ($T^* = 2.0$) yields density RMSE of $0.220$ and $0.179$ respectively, with velocity RMSE ($0.314$, $0.346$) actually below the rigid-body baseline ($0.400$). Limitations remain: a $256$-particle regime we never trained on, density reconstruction below the rigid-body baseline on the LJ fluid, and compositional and commutativity tests on LJ checkpoints not yet measured at test time.
+\end{abstract}
+
+\section{Introduction}
+
+A practical lesson from the last decade of representation learning is that compositional structure in the embedding pays off downstream. Word embeddings carry analogies linearly~\cite{mikolov2013word2vec}; image features compose into scenes~\cite{deng2009imagenet}; language models exhibit predictable compositional scaling~\cite{kaplan2020scaling}. In the physical sciences, an analogous question is whether a learned representation of a physical system can support algebraic operations that match the physics: combining two subsystems should produce a representation of the union, and evolving the combined representation in time should match what would have been obtained by evolving the parts separately and recombining.
+
+Geometric deep learning supplies one half of the answer in the form of equivariant networks~\cite{cohen2016group, thomas2018tensorfield, satorras2021egnn} and graph-based simulators~\cite{battaglia2018graphnets, sanchez2020learning, bronstein2021geometric}. Neural operators~\cite{li2021fno, kovachki2023fno} learn maps between function spaces. None of these directly address whether the embedding itself --- the vector that one would write to disk --- supports a closed algebra over both \emph{compose} (spatial union) and \emph{evolve} (time advance). The closure question matters because closure is what allows reasoning at the level of the representation: a substrate for hierarchical simulation, multi-scale composition, and the kind of symbolic-algebraic operations on learned vectors that have proven productive in language and vision.
+
+This paper is a progress report on that question for two-dimensional rigid-body scenes. The setup is deliberately simple: $64$ particles drawn from $5$ rigid objects (circles and rectangles) under gravity and elastic collisions. The architecture (Section~\ref{sec:method}) has a translation-invariant graph encoder, a symmetric learned combine operator $\combine$, an evolve operator $\evolve$ with an analytical centre-of-mass update and a learned residual on the embedding, and decoders for density and velocity on a $32 \times 32$ grid. Training imposes path-independence between hierarchical decompositions of a particle set and the direct encoding of the union, plus a sliced-Wasserstein loss on density that we found to be central.
+
+We organise our findings as a path from a strong density loss to algebra closure under both operators.
+
+\begin{enumerate}[leftmargin=*, itemsep=2pt, topsep=2pt]
+  \item \textbf{Sliced Wasserstein replaces the MSE blur ceiling.} Pixel MSE on a density grid penalises mass at the wrong location at the same rate as no mass at all; the loss-optimal response is to smear. Replacing pixel MSE with a sliced-Wasserstein density loss~\cite{rabin2011wasserstein, kolouri2019sliced} drops density RMSE from $0.190$ to $0.114$ at $64$ particles, below the MSE oracle ceiling at $\approx 0.125$ (Section~\ref{sec:sw}).
+  \item \textbf{Multi-size paired-union supervision unblocks scene-size out-of-distribution generalisation.} Adding two paired-union losses on $128$-particle unions of $64$-particle batch samples --- one Wasserstein density term and one combine-anchor term tying $\combine(\enc(A), \enc(B))$ to $\enc(A \cup B)$ --- reduces $128$-particle direct-encode density RMSE from $0.188$ to $0.116$ ($-38\%$) and via-combine RMSE from $0.207$ to $0.142$ ($-32\%$), with in-distribution $64$p density slightly improving from $0.114$ to $0.097$ (Section~\ref{sec:multisize}).
+  \item \textbf{An explicit compose--evolve commutativity loss closes the algebra under time evolution.} Even before any explicit training, the path-independence anchor produces approximate commutativity: $\combine \circ \evolve \approx \evolve \circ \combine$ holds at cosine $0.99$ for one step, decaying to $0.86$ at eight steps. Adding a single MSE term between the two paths drives commutativity to cosine $\ge 0.989$ out to $k = 8$, an order-of-magnitude reduction in MSE at every horizon. The algebra is closed under both axes within the trained regime (Section~\ref{sec:compose-evolve}).
+\end{enumerate}
+
+We are explicit about what is \emph{not} established. The compose--evolve closure is demonstrated in the embedding, not in decoded observables: it says that paths through the algebra agree, not that the prediction at $k = 8$ steps is physically accurate. A $256$-particle regime, unseen during training, remains hard (Section~\ref{sec:limitations}). Velocity reconstruction lags density on rigid bodies. The Lennard-Jones cross-regime results in Section~\ref{sec:lj} report density and velocity RMSE only; the compositional E1--E4 suite and commutativity tests on the LJ checkpoints are pending.
+
+\section{Method}
+\label{sec:method}
+
+A scene is a set of $N$ particles $\{(x_i, v_i, m_i)\}_{i=1}^{N} \subset \R^2 \times \R^2 \times \R_{>0}$. We write the encoded state as a pair $(e, \frame) \in \R^d \times \R^5$, where $e$ is a learned embedding and $\frame = (\bar{x}, \bar{v}, M)$ is an exact frame state with centre-of-mass position $\bar{x} \in \R^2$, centre-of-mass velocity $\bar{v} \in \R^2$, and total mass $M \in \R_{>0}$. The frame is computed analytically; the embedding is the output of a graph network on translation-invariant per-particle features.
+
+\subsection{Encoder, combine, evolve}
+
+Each particle is described by translation-invariant features $f_i = (x_i - \bar{x},\, v_i - \bar{v},\, m_i) \in \R^5$. A small MLP lifts $f_i$ to a per-particle vector $h_i^{(0)} \in \R^d$, and we run two rounds of $k$-nearest-neighbour message passing in the CoM-relative geometry with $k=8$:
+\begin{equation}
+  h_i^{(\ell+1)} = h_i^{(\ell)} + \mathrm{MLP}_u\!\left( h_i^{(\ell)},\, \sum_{j \in \mathcal{N}_k(i)} \mathrm{MLP}_e(h_i^{(\ell)},\, h_j^{(\ell)},\, \|x_i - x_j\|) \right),
+\end{equation}
+followed by a LayerNorm. The embedding is a sum-pool plus a final MLP that takes $\log N$ as a side feature:
+\begin{equation}
+  e \;=\; \mathrm{LayerNorm}\!\left(\mathrm{MLP}_p\!\left(\sum_i h_i^{(L)},\, \log N\right)\right) \in \R^{128}.
+\end{equation}
+
+The combine operator $\combine : (\R^d \times \R^5)^2 \to \R^d \times \R^5$ is symmetric. The frame is closed-form: $\bar{x}_{a \combine b} = (M_a \bar{x}_a + M_b \bar{x}_b)/(M_a + M_b)$ (analogously for $\bar{v}$ and $M$). The embedding is
+\begin{equation}
+  e_{a \combine b} \;=\; \mathrm{LayerNorm}\!\left(\mathrm{MLP}_c\!\left(\,e_a + e_b,\;\, e_a \odot e_b,\;\, |e_a - e_b|,\;\, \frame_{ab}\,\right)\right),
+\end{equation}
+where $\odot$ is elementwise product and $\frame_{ab} \in \R^4$ supplies inter-group context $(\|\bar{x}_a - \bar{x}_b\|, \|\bar{v}_a - \bar{v}_b\|, M_a + M_b, |M_a - M_b|)$. The triple $(e_a + e_b, e_a \odot e_b, |e_a - e_b|)$ is symmetric in $a, b$, so commutativity $a \combine b = b \combine a$ is exact by construction.
+
+The evolve operator $\evolve$ updates the frame analytically by drift, $\bar{x} \mapsto \bar{x} + \Delta t\, \bar{v}$, with a learned residual MLP, and updates the embedding by a residual MLP followed by a learned projector $P : \R^d \to \R^d$ that pulls the result onto the valid manifold:
+\begin{equation}
+  e_{t+\Delta t} \;=\; P\!\left(e_t + \mathrm{MLP}_e(e_t)\right).
+\end{equation}
+The same projector $P$ is applied after every combine.
+
+\subsection{Decoders and ground truth}
+
+The density decoder projects $(e, \frame)$ to a $4 \times 4$ feature map and applies three transposed convolutions to produce a $32 \times 32$ probability map via sigmoid; the velocity decoder is identical with two output channels and no activation. The ground-truth density is a Gaussian kernel sum, $\rho_*(x) = \sum_i m_i \exp(-\|x - x_i\|^2 / 2\sigma^2)$ with $\sigma = 0.4$, evaluated on a $32 \times 32$ grid in a canonical frame defined by $\arg(M_2)/2$, where $M_2 = \sum_i m_i (x_i - \bar{x})^2 \in \mathbb{C}$ is the quadrupole moment.
+
+\subsection{Path-independence as a global anchor}
+
+Given a particle set $S$, a \emph{decomposition tree} $T$ has leaves that partition $S$. The tree-encoded embedding is obtained by encoding each leaf and combining bottom-up. Path-independence requires this to agree with the direct encoding:
+\begin{equation}
+  \mathcal{L}_{\mathrm{anchor}}(S) \;=\; \E_{T \sim \mathcal{T}(S)} \big\| e_T(S) - \enc(S) \big\|_2^2.
+\end{equation}
+A complementary dispersion term penalises tree-to-tree variance. Together they make the algebra approximately associative: if all trees of $S$ embed to the same point, then any two trees do.
+
+\subsection{Phase A and Phase J training}
+
+Training proceeds in two phases. Phase A (warmup) trains the encoder, frame, structural readouts, density decoder, and velocity decoder on direct encodings only. Phase J (joint) re-enables every loss simultaneously: anchor, dispersion, density Wasserstein, velocity MSE, observable MSE, multi-step latent and observable evolution, conservation, micro-vs-macro consistency, energy consistency, and the additional terms introduced in Sections~\ref{sec:multisize}--\ref{sec:compose-evolve}. A loss normaliser maintains a running max per term so that scales remain commensurable. The full configuration uses $1024$ training trajectories of $64$ particles each, $30$ time steps per trajectory, $\Delta t = 0.005$, on a single RTX 3090 Ti for roughly twenty hours.
+
+\section{Sliced Wasserstein for density}
+\label{sec:sw}
+
+Density reconstruction had been stuck at RMSE $\approx 0.19$ for several iterations of the architecture (point-query MLP, spatial-broadcast with Fourier features, transposed convolution, doubled embedding dimension). Diagnostic baselines clarified the situation: a constant predictor (the dataset-mean density) achieves RMSE $0.134$, and an oracle particle-to-MLP decoder seeing actual particle locations achieves $0.125$. The model's $0.146$--$0.190$ band sat between these endpoints; capacity moved it within the band but never below the oracle ceiling.
+
+The cause is structural. Pixel MSE between a predicted density $\hat\rho$ and target $\rho_*$ is local: a unit of mass placed correctly at $p_0$ and a unit of mass placed at any other location $p \ne p_0$ contribute identically, regardless of $\|p - p_0\|$. Faced with uncertainty about object location, the loss-minimising response is to smear mass uniformly over the plausible support, since the resulting per-pixel error is smaller than concentrating in the wrong place.
+
+The sliced Wasserstein-1 distance between two densities $\hat\rho, \rho_*$ on $\R^2$ is the expectation, over uniform unit directions $\theta \in S^1$, of the $1$D Wasserstein-1 distance between their projections:
+\begin{equation}
+  \SW_1(\hat\rho, \rho_*) \;=\; \E_{\theta \sim \mathrm{Unif}(S^1)} \int_{\R} \big| F_{\theta\sharp \hat\rho}(t) - F_{\theta\sharp \rho_*}(t) \big| \,\mathrm{d}t.
+\end{equation}
+We approximate the expectation with $K = 64$ random directions per minibatch and discretise the $1$D integral by sorting projected grid coordinates and integrating the absolute CDF gap; gradients flow through the sort. Mass at the wrong location now costs $\mathrm{O}(\|p - p_0\|)$, not $\mathrm{O}(1)$, so smearing is no longer an attractor~\cite{rabin2011wasserstein, deshpande2018gswd, kolouri2019sliced, villani2008optimal}. With architecture, capacity, and dataset held fixed, replacing pixel MSE with $\SW_1$ on the density grid yields the change in Table~\ref{tab:sw}.
+
+\begin{table}[t]
+\centering
+\caption{Density reconstruction at $64$ particles, $5$ rigid objects, $128$-dim embedding, $1024$ training trajectories. SW is the only change between rows; all other losses are identical.}
+\label{tab:sw}
+\begin{tabular}{lcc}
+\toprule
+Loss on density grid & Density RMSE & Notes \\
+\midrule
+Constant predictor (dataset mean) & $0.134$ & target-side floor \\
+Oracle (particles $\to$ MLP) & $0.125$ & MSE-attainable ceiling \\
+\midrule
+Pixel MSE & $0.190$ & long-standing blur ceiling \\
+Sliced Wasserstein-1 (this work) & $\mathbf{0.114}$ & below the MSE oracle \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The $0.114$ figure is below the MSE oracle because $\SW_1$ accepts a sharper prediction at the cost of a small mis-centring that pixel MSE would punish heavily. Linear probes on eight held-out observables --- radius of gyration, mean pairwise distance, $n$-cluster count, total angular speed, $\psi_6$, internal kinetic energy, bounding radius, spatial standard deviation --- all attain $R^2 \ge 0.89$. The $\SW_1$ loss does not merely improve visual reconstruction; it improves the embedding's information content as measured by independent linear probes.
+
+This is the foundation we build on. Every subsequent result uses pure-SW density as the in-distribution baseline.
+
+\section{Multi-size training closes the OOD scene-size gap}
+\label{sec:multisize}
+
+The clearest limitation of the SW-only checkpoint was scene-size out-of-distribution generalisation. A $128$-particle scene encoded directly by the $64$p-trained encoder reached density RMSE $0.188$; composing two $64$-particle scenes via $\combine$ landed at $0.207$. Both were $\sim 65\%$ worse than the in-distribution baseline. The encoder, not the algebra, was the floor.
+
+We add two paired-union losses to Phase J. For each minibatch we randomly partition the $B$ samples of $64$-particle scenes into pairs $(A_i, B_i)$, place $B_i$ six units offset from the origin, and form the union $A_i \cup B_i$ with $128$ particles.
+
+\paragraph{Density on the union.} A sliced-Wasserstein density loss between $\enc(A \cup B)$'s decoded density and the Gaussian-kernel ground truth of the $128$-particle union (weight $2.0$):
+\begin{equation}
+  \mathcal{L}_{\mathrm{dens-2x}} = \SW_1\!\big(D(\enc(A \cup B)),\, \rho_*(A \cup B)\big).
+\end{equation}
+This exposes the encoder to $128$-particle inputs.
+
+\paragraph{Combine-anchor.} An MSE between $\combine(\enc(A), \enc(B))$ and $\enc(A \cup B)$ (weight $1.0$):
+\begin{equation}
+  \mathcal{L}_{\mathrm{combine-anchor}} = \big\| P\!\big(\combine(\enc(A), \enc(B))\big) - \mathrm{sg}\!\big[\enc(A \cup B)\big] \big\|_2^2,
+\end{equation}
+with stop-gradient on the target. This supplies $\combine$ with direct compositional supervision, anchoring the combined representation to the directly-encoded union rather than only to the indirect path-independence target.
+
+We retrain from scratch (\verb|--no-resume|) with all original Phase J losses plus these two terms and evaluate on the same eval suite as before. Table~\ref{tab:multisize} compares pure-SW (the original headline checkpoint of Section~\ref{sec:sw}) and multi-size (pure-SW plus the two paired-union terms).
+
+\begin{table}[t]
+\centering
+\caption{Effect of paired-union supervision on in- and out-of-distribution metrics. ``Direct'' = encoder applied to the full particle set; ``via combine'' = halves encoded separately and joined via $\combine$. Lower is better.}
+\label{tab:multisize}
+\begin{tabular}{lccc}
+\toprule
+Metric & Pure-SW & Multi-size & $\Delta$ \\
+\midrule
+$64$p density RMSE & $0.114$ & $\mathbf{0.097}$ & $-15\%$ \\
+$64$p velocity RMSE & $0.372$ & $0.400$ & $+8\%$ \\
+Particle-NN velocity RMSE & $0.703$ & $0.736$ & $+5\%$ \\
+Phase-space $W_1$ & $0.146$ & $0.135$ & $-8\%$ \\
+\midrule
+E2 $32{+}32 \to 64$ latent MSE & $0.90$ & $1.10$ & $+22\%$ \\
+E2 density via combine & $0.130$ & $0.131$ & flat \\
+E2 density via direct & $0.111$ & $0.094$ & $-15\%$ \\
+\midrule
+\textbf{E3 $128$p direct OOD density} & $0.188$ & $\mathbf{0.116}$ & $\mathbf{-38\%}$ \\
+\textbf{E3 $128$p via combine density} & $0.207$ & $\mathbf{0.142}$ & $\mathbf{-32\%}$ \\
+\midrule
+E4 $256$p balanced density & $0.253$ & $0.254$ & flat \\
+E4 $256$p chain density & $0.254$ & $0.254$ & flat \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The OOD scene-size gap that was the principal open issue of the pure-SW checkpoint is largely closed. With $128$-particle paired-union supervision, both direct and via-combine density at $128$ particles drop to within striking distance of the in-distribution baseline. Encoding had been the bottleneck: once the encoder sees $128$-particle inputs, it generalises cleanly. The $256$-particle regime remains hard because we still never train on it.
+
+The price is a slight regression in velocity, both pixelwise ($0.372 \to 0.400$) and at particle locations ($0.703 \to 0.736$). The two new losses concentrate on density only; we did not add a velocity-side analogue. The latent MSE in E2 grows somewhat ($0.90 \to 1.10$) because the geometry of the embedding has shifted to accommodate the $128$p regime; decoded densities are unchanged or improved.
+
+\section{Compose--evolve commutativity}
+\label{sec:compose-evolve}
+
+The algebra has so far been constrained on the spatial axis: combining the encodings of subsets and demanding agreement with the union. The natural next constraint is closure on the time axis. The encoded state $(e, \frame)$ supports a one-step evolution operator $\evolve$. Closure under both compose and evolve says that
+\begin{equation}
+  \evolve\big(\combine(a, b)\big) \;\stackrel{?}{=}\; \combine\big(\evolve(a),\, \evolve(b)\big),
+\end{equation}
+which we will call \emph{compose--evolve commutativity}. This is the algebraic property of a tensor product on representations of a Lie semigroup: combining and evolving commute~\cite{villani2008optimal}.
+
+\subsection{Loss}
+
+We add a third paired-union loss to Phase J (weight $1.0$):
+\begin{equation}
+  \mathcal{L}_{\mathrm{compose-evolve}} = \big\| P\!\big(\evolve(\combine(\enc A, \enc B))\big) \;-\; P\!\big(\combine(\evolve(\enc A), \evolve(\enc B))\big) \big\|_2^2.
+\end{equation}
+Empirically, this loss starts at $\approx 7 \times 10^{-4}$ at the beginning of Phase J --- already small, suggesting commutativity is partially implicit in the path-independence anchor --- and explicit training drives it lower.
+
+\subsection{Test-time commutativity}
+
+We measure compose--evolve commutativity on $200$ independent pairs of validation scenes $(A, B)$, each pair offset by six spatial units. For horizon $k \in \{1, 2, 4, 8\}$ we compute
+\begin{align}
+  e^{(1)}_k &= \evolve^k\!\big(\combine(\enc A, \enc B)\big), \\
+  e^{(2)}_k &= \combine\!\big(\evolve^k \enc A,\; \evolve^k \enc B\big),
+\end{align}
+and report $\|e^{(1)}_k - e^{(2)}_k\|^2$ and the cosine similarity between them. Table~\ref{tab:compose-evolve} compares the pure-SW checkpoint (no compose--evolve loss) against the compose--evolve checkpoint, which adds all three paired-union terms.
+
+\begin{table}[t]
+\centering
+\caption{Compose--evolve commutativity at test time. MSE is between $\evolve^k(\combine(a,b))$ and $\combine(\evolve^k a, \evolve^k b)$ on validation pairs; cosine similarity is between the same vectors. Pure-SW had no commutativity training; compose-evolve adds the explicit MSE term.}
+\label{tab:compose-evolve}
+\begin{tabular}{lcccc}
+\toprule
+Horizon $k$ & Pure-SW MSE & Compose-evolve MSE & Pure-SW cos & Compose-evolve cos \\
+\midrule
+$1$ & $0.0110$ & $\mathbf{0.0008}$ & $0.9882$ & $\mathbf{0.9998}$ \\
+$2$ & $0.0292$ & $\mathbf{0.0025}$ & $0.9678$ & $\mathbf{0.9994}$ \\
+$4$ & $0.0675$ & $\mathbf{0.0087}$ & $0.9278$ & $\mathbf{0.9979}$ \\
+$8$ & $0.1424$ & $\mathbf{0.0474}$ & $0.8593$ & $\mathbf{0.9890}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two observations stand out. First, even without explicit training, the pure-SW checkpoint shows non-trivial commutativity: cosine $0.99$ at $k = 1$, decaying to $0.86$ at $k = 8$. The path-independence anchor does most of the work; closure under time evolution is partially implicit in the algebra constraint imposed on the spatial axis. Second, an explicit loss on the commutativity gap drives test-time MSE down by an order of magnitude at every horizon and cosine to $\ge 0.989$ out to eight evolution steps. Within the trained regime the algebra is closed under both operators to within $\sim 1^\circ$.
+
+What this does \emph{not} say: it says nothing about whether $\evolve^k$ produces a physically accurate evolution at $k = 8$. We are measuring agreement \emph{between two paths through the algebra}, not agreement of either path with a ground-truth simulator. Compose--evolve closure is an algebraic consistency property; it is necessary but not sufficient for accurate long-horizon prediction.
+
+\subsection{Effect on density and on the rest of the suite}
+
+Adding compose--evolve to multi-size does not regress the other metrics; it slightly improves them. Table~\ref{tab:density-progression} tracks $64$p and $128$p density RMSE across the three checkpoints.
+
+\begin{table}[t]
+\centering
+\caption{Density RMSE across the three checkpoints. Each adds losses to the previous; nothing is removed. Compose-evolve continues to improve every density metric tracked while driving commutativity to $\ge 0.989$ at $k \le 8$.}
+\label{tab:density-progression}
+\begin{tabular}{lccc}
+\toprule
+Metric & Pure-SW & Multi-size & Compose-evolve \\
+\midrule
+$64$p density RMSE & $0.114$ & $0.097$ & $\mathbf{0.093}$ \\
+E3 $128$p direct OOD density & $0.188$ & $0.116$ & $\mathbf{0.110}$ \\
+E3 $128$p via combine density & $0.207$ & $0.142$ & $\mathbf{0.135}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The compose--evolve term acts as a mild regulariser: it constrains $\combine$ and $\evolve$ to be jointly consistent, which appears to slightly shrink the configuration space of valid embeddings without forcing any particular density trade-off.
+
+\section{Compositional generalisation, end to end}
+\label{sec:compositional}
+
+We summarise here the full battery of compositional tests on the final compose--evolve checkpoint, with the intermediate and pure-SW numbers carried over for context. Definitions of the four test types follow the previous draft~\cite{rabin2011wasserstein} and are reproduced in shortened form for completeness.
+
+\paragraph{E1 --- Out-of-distribution tree shapes.} Build a decomposition tree of a $64$-particle scene with group sizes the model never saw during training. Tree shapes with $\{3, 5, 7, 12, 24\}$ groups are out-of-distribution; $\{4\}$ is in-distribution. Compare the tree-encoded embedding to the direct encoding via latent MSE and cosine similarity. Pure-SW achieves cosine $0.50$ at $4$ groups (the in-distribution case), $0.62$ at $3$ groups (smaller and bigger groups need fewer combine steps and accumulate less drift), and $0.29$ at $24$ groups. Degradation is graceful, not catastrophic.
+
+\paragraph{E2 --- Subset composition.} Split a $64$-particle scene into two halves of $32$, encode each, combine, compare. One combine step adds $\sim 17\%$ to density RMSE in pure-SW ($0.130$ via combine vs $0.111$ direct). Multi-size and compose--evolve do not improve this gap: the pure-SW value $0.130$ is roughly preserved at $0.131$, while the direct number drops because the encoder is stronger. The single-step combine cost is real and quantifiable.
+
+\paragraph{E3 --- Cross-scene union.} The headline OOD test, reported in full above. Pure-SW $0.207$ (combine) vs $0.188$ (direct); compose--evolve $0.135$ (combine) vs $0.110$ (direct).
+
+\paragraph{E4 --- Associativity.} Take four $64$-particle scenes and form their union via balanced $((AB)(CD))$ and chain $(((AB)C)D)$ trees. Pure-SW: latent MSE $0.32$, cosine $0.71$ between the two trees, decoded densities differing by $0.001$ (RMSE $0.253$ vs $0.254$). Multi-size and compose-evolve are flat at $\approx 0.254$. Two genuinely different tree shapes over $256$ particles produce nearly identical embeddings and identical decoded densities. Associativity is the cleanest positive result on the spatial axis: the combine operator behaves like an associative monoid in distribution, despite no architectural constraint enforcing it. The absolute number $\approx 0.254$ remains poor because $256$ particles is OOD.
+
+\section{Cross-regime transfer: rigid bodies, Lennard-Jones fluid, and Lennard-Jones gas}
+\label{sec:lj}
+
+The closure results above are on a single physical domain (rigid bodies under gravity and elastic collisions). A natural test of the framework is whether the same architecture and the same loss inventory transfer to a qualitatively different physics --- continuous pair interactions, no rigid structure, temperature-dependent phase behaviour --- without any architectural change.
+
+We train two additional checkpoints on the Lennard-Jones (LJ) system. The simulator integrates $N = 64$ particles in a $2$D box at reduced density $\rho^* = 0.7$ under the standard $12$--$6$ pair potential, thermalised by a Langevin thermostat at reduced temperature $T^*$. Two regimes are reported: $T^* = 1.0$ (a fluid with significant clustering and voids) and $T^* = 2.0$ (a gas with near-uniform density). Training uses the same $1024$ trajectories, the same V4 architecture (translation-invariant graph encoder, learned $\combine$, learned $\evolve$, density and velocity decoders), and the same Phase A / Phase J loss schedule, including the multi-size paired-union and compose--evolve commutativity terms. The only differences from the rigid-body configuration are \verb|sim_type=lj| and the temperature. Wall-clock times were $27.7$ hours for $T^* = 1.0$ and approximately $14.4$ hours for $T^* = 2.0$ on a single RTX 3090 Ti.
+
+Table~\ref{tab:lj} compares the headline reconstruction metrics across the three regimes.
+
+\begin{table}[t]
+\centering
+\caption{Density and velocity reconstruction across thermodynamic regimes. All numbers are at $64$ particles, in-distribution evaluation. Same V4 architecture, same loss inventory, same $1024$ training trajectories. Only the simulator and (for LJ) the temperature change.}
+\label{tab:lj}
+\begin{tabular}{lcc}
+\toprule
+Regime & Density RMSE & Velocity RMSE \\
+\midrule
+Rigid bodies (in-dist $64$p) & $\mathbf{0.093}$ & $0.400$ \\
+LJ fluid ($T^* = 1.0$) & $0.220$ & $\mathbf{0.314}$ \\
+LJ gas ($T^* = 2.0$) & $0.179$ & $0.346$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two interpretive points stand out.
+
+\paragraph{Density follows the structure.} Density reconstruction is easiest on rigid bodies, where mass is concentrated on a small number of compact objects that the encoder can localise. It is hardest on the LJ fluid, where the particle distribution is intermediate --- diffuse but with emergent clusters and voids that the decoder must reproduce. The LJ gas is in between: more diffuse than rigid but more spatially uniform than the fluid, and the more uniform target is easier to reconstruct than the structured fluid. The ordering rigid $<$ gas $<$ fluid for density RMSE is what one would predict from the spatial complexity of the underlying mass distribution. Absolute LJ numbers are roughly twice the rigid-body baseline, which is consistent with continuous LJ density being intrinsically harder to capture on a $32 \times 32$ grid than five rigid blobs.
+
+\paragraph{Velocity is better on LJ than rigid.} Velocity RMSE on rigid bodies is $0.400$; on both LJ regimes it is lower ($0.314$, $0.346$). On rigid bodies, particles within a single object share a velocity, so velocity content is dominated by a small number of object-level rigid motions; the encoder need not preserve fine-grained per-particle velocity to do well on object-level dynamics. On LJ, every particle has its own thermal velocity, and the velocity field carries genuine per-particle information that the encoder is forced to represent if the velocity decoder is to fit the ground truth. The encoder learns more useful velocity structure when the physics demands it. The rigid-body velocity gap noted in Section~\ref{sec:limitations} thus has a domain-specific component: rigid-body velocity is partly a representation choice rather than a fundamental modelling limit.
+
+\paragraph{What this is and is not.} The framework transfers across thermodynamic regimes without architectural changes. This is the cross-domain claim that the original draft of this paper carried as future work. What we have not measured on the LJ checkpoints is the compositional E1--E4 suite of Section~\ref{sec:compositional} or the test-time compose--evolve commutativity of Section~\ref{sec:compose-evolve}. The training-time commutativity loss $\mathcal{L}_{\mathrm{compose-evolve}}$ ended at $\approx 2 \times 10^{-4}$ for $T^* = 1.0$ and was at $\approx 4 \times 10^{-4}$ mid-training for $T^* = 2.0$, both within the same range as the converged rigid-body checkpoint, which is consistent with the property holding during training; but the test-time numbers are pending and we make no claim of LJ closure on the time axis.
+
+\section{Limitations and negative results}
+\label{sec:limitations}
+
+We catalogue the failure modes honestly because they sharpen what the positive results actually show.
+
+\paragraph{$256$-particle scenes are still hard.} Multi-size training on paired $128$-particle unions does not extrapolate to $256$ particles: E4 density stays flat at $\approx 0.254$ across all three checkpoints. The natural fix --- training on triples or quadruples of $64$-particle samples --- has not yet been run. The pattern is consistent with our earlier reading of the OOD scene-size effect: the encoder can interpolate within the trained range but does not extrapolate outside it.
+
+\paragraph{Velocity reconstruction lags density.} The fair particle-NN velocity RMSE rises from $0.703$ (pure-SW) to $0.736$ (multi-size) and stays in the $0.73$ band with compose--evolve. The new losses target density and embedding, not velocity. We have no velocity-side analogue of the SW improvement: an earlier attempt at a $4$D phase-space sliced Wasserstein loss regressed both density (to $0.168$) and velocity (particle-NN $0.787$), because spatial supervision was diluted across $4$ projection dimensions. Phase-space SW is retained only as a low-weight auxiliary, not a primary loss.
+
+\paragraph{Algebra closure is not physical accuracy.} Compose--evolve commutativity at horizon $k = 8$ says that two paths through the algebra agree, not that either path's prediction is physically accurate at $k = 8$. The decoded density at $k = 8$ has error from the $\evolve$ operator's residual, which is not measured by our commutativity test.
+
+\paragraph{LJ compositional and commutativity tests are pending.} Section~\ref{sec:lj} reports LJ cross-regime density and velocity RMSE only. The compositional E1--E4 evaluation (out-of-distribution tree shapes, subset composition, cross-scene union, associativity) and the test-time compose--evolve commutativity sweep have not been run on the LJ checkpoints. The training-time commutativity loss was at the same floor as the converged rigid checkpoint, suggesting the property held during training, but we do not claim test-time LJ closure on either axis.
+
+\paragraph{Several over-engineered embeddings did worse, recorded for posterity.} Earlier iterations used $34$-dimensional analytical multipole moments with a binomial-shift combine, $9$-dimensional PCA-canonical features, and split position/velocity channels. Each was theoretically attractive and each was beaten by the simple translation-invariant graph encoder reported here. PCA orientations were unstable near isotropic configurations; mixing analytical moments with learned scalars destroyed compositionality; channel splits over-constrained the encoder. Prescribing the meaning of embedding dimensions traded composability for representational capacity, and the trade was not in the prescriber's favour.
+
+\section{Related work}
+\label{sec:related}
+
+The architectural backbone is a graph network~\cite{battaglia2018graphnets, sanchez2020learning} with translation-invariant inputs, in the lineage of equivariant networks~\cite{cohen2016group, thomas2018tensorfield, satorras2021egnn} and the broader programme of geometric deep learning~\cite{bronstein2021geometric}. The decoder is a deconvolution from a small spatial seed, standard in object-centric and slot-based models~\cite{watters2019cobra, locatello2020slot, greff2020binding}. Time evolution in embedding space connects to neural ODEs~\cite{chen2018neuralode} and, at population level, neural operators~\cite{li2021fno, kovachki2023fno}.
+
+The density loss is sliced Wasserstein~\cite{rabin2011wasserstein, kolouri2019sliced, deshpande2018gswd} with optimal-transport theory in~\cite{villani2008optimal}. The closest conceptual neighbours on the algebra side are works that learn coarse-graining or renormalisation for physical systems~\cite{wilson1971renormalization} and graph-network simulators~\cite{sanchez2020learning}. Compositionality of learned representations under group operations has been studied for image-domain transformations~\cite{cohen2016group} and for object-centric scenes~\cite{locatello2020slot, greff2020binding}; we are not aware of prior work that directly tests closure under both spatial composition and time evolution in an embedding learned from a particle simulator. Concurrent work on coarse-grained molecular simulation with learned message-passing~\cite{sanchez2020learning} shares the simulator-side motivation; our concern is the algebra of the embedding, not the simulator's rollout fidelity.
+
+\section{Discussion and future work}
+\label{sec:discussion}
+
+A working hypothesis at the start of this project was that a learned latent algebra could describe a physical system, with the embedding closed under both compose and evolve. The progress reported here is consistent with that hypothesis at the trained regime: with a sliced-Wasserstein density loss to give the encoder a non-degenerate target, paired-union supervision to extend the encoder's range across scene sizes, and a single MSE term tying $\evolve \circ \combine$ to $\combine \circ \evolve$, the algebra becomes approximately closed on both axes within the regime it was trained on. The $128$-particle out-of-distribution gap that was the main open issue of the original draft is largely closed; compose--evolve commutativity, which was emergent at cosine $\approx 0.86$--$0.99$ from the path-independence anchor alone, is now $\ge 0.989$ out to eight evolution steps.
+
+The picture has natural next steps.
+
+\begin{enumerate}[leftmargin=*, itemsep=2pt, topsep=2pt]
+  \item \textbf{Extend the trained regime.} Train on triples and quadruples of $64$-particle samples (i.e.\ $192$, $256$, $320$ particles) to push the multi-size frontier. The pattern in Section~\ref{sec:multisize} suggests $256$p will follow $128$p down once it is in distribution.
+  \item \textbf{Run the compositional and commutativity suites on LJ.} Section~\ref{sec:lj} establishes density and velocity transfer across rigid, LJ fluid, and LJ gas, but does not measure E1--E4 or the test-time compose--evolve cosine sweep on the LJ checkpoints. These are the natural next evaluations and require no further training.
+  \item \textbf{Complete the LJ phase diagram.} A $T^* = 0.3$ solid LJ run would join the fluid and gas checkpoints to span the three canonical thermodynamic regimes. Adding a third domain --- the $2$D Ising model --- would test transfer to a discrete-spin system rather than another continuous-particle one, and would let the same closure tests be run on a renormalisation-group-style coarse graining.
+  \item \textbf{Velocity-side analogue of the SW lever.} Density quality is now well above velocity quality. The straightforward thing to try is a SW loss on the joint position-momentum distribution restricted to the spatial slice (the $2$D marginal), or a transport-based loss on the velocity-weighted density. The phase-space attempt failed because of dimension dilution; a hybrid that keeps spatial supervision sharp may not.
+  \item \textbf{Decoded-space commutativity at long horizon.} Compose--evolve currently measures agreement in the embedding. The natural follow-on is to measure agreement in decoded density and velocity at $k = 8, 16, 32$ steps, against a ground-truth simulator. This separates algebra closure from prediction accuracy.
+  \item \textbf{Downstream prediction tasks.} The eight linear-probe observables of Section~\ref{sec:sw} were chosen to be unsupervised diagnostics of embedding content, not endpoints. A more demanding test of the algebra is whether the embedding supports nontrivial downstream prediction --- phase-transition detection on LJ, energy and pressure regression, lifetime prediction of metastable configurations --- using only linear or shallow heads on the frozen embedding. Larger-scale runs (the local single-3090 box has been the bandwidth ceiling on dataset size; cloud-GPU migration is in progress) will make these tractable.
+\end{enumerate}
+
+The longer-term motivation is the substrate question: if a representation is reliably closed under compose and evolve, it can be used directly for hierarchical reasoning across scales, explicit composition of independent simulations, and the kind of latent algebra that has been so productive in language models~\cite{mikolov2013word2vec, kaplan2020scaling}. The present paper's contribution is narrower: a recipe under which the algebra demonstrably exists on a single physical domain, an inventory of which losses produce which closure properties, and a careful catalogue of where it currently breaks.
+
+\paragraph{Reproducibility.} Numbers in Tables~\ref{tab:sw}--\ref{tab:density-progression} are taken directly from the evaluation outputs of the \texttt{rigid\_wasserstein\_pure}, \texttt{rigid\_multisize}, and \texttt{rigid\_compose\_evolve} checkpoints; numbers in Table~\ref{tab:lj} are from the \texttt{lj\_T1.0} and \texttt{lj\_T2.0} checkpoints, evaluated by \texttt{eval\_lj.py} on $128$ held-out trajectories. We report single-run point estimates and have not yet aggregated over seeds.
+
+% Manual bibliography (avoids natbib dependency)
+\begin{thebibliography}{99}
+\bibitem[Battaglia et al.(2018)]{battaglia2018graphnets} P.~W. Battaglia et al. Relational inductive biases, deep learning, and graph networks. \emph{arXiv:1806.01261}, 2018.
+\bibitem[Bronstein et al.(2021)]{bronstein2021geometric} M.~M. Bronstein, J. Bruna, T. Cohen, P. Veli\v{c}kovi\'c. Geometric deep learning. \emph{arXiv:2104.13478}, 2021.
+\bibitem[Chen et al.(2018)]{chen2018neuralode} R.~T.~Q. Chen, Y. Rubanova, J. Bettencourt, D. Duvenaud. Neural ordinary differential equations. \emph{NeurIPS}, 2018.
+\bibitem[Cohen and Welling(2016)]{cohen2016group} T. Cohen and M. Welling. Group equivariant convolutional networks. \emph{ICML}, 2016.
+\bibitem[Deng et al.(2009)]{deng2009imagenet} J. Deng et al. ImageNet: A large-scale hierarchical image database. \emph{CVPR}, 2009.
+\bibitem[Deshpande et al.(2018)]{deshpande2018gswd} I. Deshpande, Z. Zhang, A.~G. Schwing. Generative modeling using the sliced Wasserstein distance. \emph{CVPR}, 2018.
+\bibitem[Greff et al.(2020)]{greff2020binding} K. Greff, S. van Steenkiste, J. Schmidhuber. On the binding problem in artificial neural networks. \emph{arXiv:2012.05208}, 2020.
+\bibitem[Kaplan et al.(2020)]{kaplan2020scaling} J. Kaplan et al. Scaling laws for neural language models. \emph{arXiv:2001.08361}, 2020.
+\bibitem[Kolouri et al.(2019)]{kolouri2019sliced} S. Kolouri, K. Nadjahi, U. Simsekli, R. Badeau, G.~K. Rohde. Generalized sliced Wasserstein distances. \emph{NeurIPS}, 2019.
+\bibitem[Kovachki et al.(2023)]{kovachki2023fno} N. Kovachki et al. Neural operator: learning maps between function spaces with applications to PDEs. \emph{JMLR}, 2023.
+\bibitem[Li et al.(2021)]{li2021fno} Z. Li et al. Fourier neural operator for parametric partial differential equations. \emph{ICLR}, 2021.
+\bibitem[Locatello et al.(2020)]{locatello2020slot} F. Locatello et al. Object-centric learning with slot attention. \emph{NeurIPS}, 2020.
+\bibitem[Mikolov et al.(2013)]{mikolov2013word2vec} T. Mikolov, K. Chen, G. Corrado, J. Dean. Efficient estimation of word representations in vector space. \emph{arXiv:1301.3781}, 2013.
+\bibitem[Rabin et al.(2011)]{rabin2011wasserstein} J. Rabin, G. Peyr\'e, J. Delon, M. Bernot. Wasserstein barycenter and its application to texture mixing. \emph{SSVM}, 2011.
+\bibitem[Sanchez-Gonzalez et al.(2020)]{sanchez2020learning} A. Sanchez-Gonzalez et al. Learning to simulate complex physics with graph networks. \emph{ICML}, 2020.
+\bibitem[Satorras et al.(2021)]{satorras2021egnn} V.~G. Satorras, E. Hoogeboom, M. Welling. E(n) equivariant graph neural networks. \emph{ICML}, 2021.
+\bibitem[Thomas et al.(2018)]{thomas2018tensorfield} N. Thomas et al. Tensor field networks. \emph{arXiv:1802.08219}, 2018.
+\bibitem[Villani(2008)]{villani2008optimal} C. Villani. \emph{Optimal Transport: Old and New}. Springer, 2008.
+\bibitem[Watters et al.(2019)]{watters2019cobra} N. Watters et al. COBRA. \emph{ICML Workshop on Self-Supervised Learning}, 2019.
+\bibitem[Wilson and Kogut(1974)]{wilson1971renormalization} K.~G. Wilson and J. Kogut. The renormalization group and the $\epsilon$ expansion. \emph{Physics Reports}, 12:75--199, 1974.
+\end{thebibliography}
+
+\end{document}
