@@ -28,7 +28,7 @@
 \newcommand{\SW}{\mathrm{SW}}
 \DeclareMathOperator*{\argmin}{arg\,min}
 
-\title{A Learned Latent Algebra for Physical Systems\\ Closed Under Spatial Composition and Time Evolution\thanks{Draft --- work in progress as of 2026-05-08.}}
+\title{A Learned Latent Algebra for Physical Systems\\ Closed Under Spatial Composition and Time Evolution\thanks{Draft --- work in progress as of 2026-05-08. Source and PDF: \url{https://github.com/sanity/physics-paper}.}}
 
 \author{Ian Clarke\thanks{\texttt{ian.clarke@gmail.com}}}
 \affil{Independent}
@@ -340,7 +340,7 @@ The picture has natural next steps.
 
 The longer-term motivation is the substrate question: if a representation is reliably closed under compose and evolve, it can be used directly for hierarchical reasoning across scales, explicit composition of independent simulations, and the kind of latent algebra that has been so productive in language models~\cite{mikolov2013word2vec, kaplan2020scaling}. The present paper's contribution is narrower: a recipe under which the algebra demonstrably exists on a single physical domain, an inventory of which losses produce which closure properties, and a careful catalogue of where it currently breaks.
 
-\paragraph{Reproducibility.} Numbers in Tables~\ref{tab:sw}--\ref{tab:density-progression} are taken directly from the evaluation outputs of the \texttt{rigid\_wasserstein\_pure}, \texttt{rigid\_multisize}, and \texttt{rigid\_compose\_evolve} checkpoints; numbers in Table~\ref{tab:lj} are from the \texttt{lj\_T1.0} and \texttt{lj\_T2.0} checkpoints, evaluated by \texttt{eval\_lj.py} on $128$ held-out trajectories. We report single-run point estimates and have not yet aggregated over seeds.
+\paragraph{Reproducibility.} Numbers in Tables~\ref{tab:sw}--\ref{tab:density-progression} are taken directly from the evaluation outputs of the \texttt{rigid\_wasserstein\_pure}, \texttt{rigid\_multisize}, and \texttt{rigid\_compose\_evolve} checkpoints; numbers in Table~\ref{tab:lj} are from the \texttt{lj\_T1.0} and \texttt{lj\_T2.0} checkpoints, evaluated by \texttt{eval\_lj.py} on $128$ held-out trajectories. We report single-run point estimates and have not yet aggregated over seeds. The PDF and \LaTeX{} source of this paper are at \url{https://github.com/sanity/physics-paper}.
 
 % Manual bibliography (avoids natbib dependency)
 \begin{thebibliography}{99}
@@ -362,8 +362,8 @@ The longer-term motivation is the substrate question: if a representation is rel
 \bibitem[Satorras et al.(2021)]{satorras2021egnn} V.~G. Satorras, E. Hoogeboom, M. Welling. E(n) equivariant graph neural networks. \emph{ICML}, 2021.
 \bibitem[Thomas et al.(2018)]{thomas2018tensorfield} N. Thomas et al. Tensor field networks. \emph{arXiv:1802.08219}, 2018.
 \bibitem[Villani(2008)]{villani2008optimal} C. Villani. \emph{Optimal Transport: Old and New}. Springer, 2008.
-\bibitem[Watters et al.(2019)]{watters2019cobra} N. Watters et al. COBRA. \emph{ICML Workshop on Self-Supervised Learning}, 2019.
-\bibitem[Wilson and Kogut(1974)]{wilson1971renormalization} K.~G. Wilson and J. Kogut. The renormalization group and the $\epsilon$ expansion. \emph{Physics Reports}, 12:75--199, 1974.
+\bibitem[Watters et al.(2019)]{watters2019cobra} N. Watters, L. Matthey, M. Bosnjak, C.~P. Burgess, A. Lerchner. COBRA. \emph{ICML Workshop on Model-Based Reinforcement Learning (MBRL)}, 2019.
+\bibitem[Wilson and Kogut(1974)]{wilson1971renormalization} K.~G. Wilson and J. Kogut. The renormalization group and the $\epsilon$ expansion. \emph{Physics Reports}, 12:75--200, 1974.
 \end{thebibliography}
 
 \end{document}
